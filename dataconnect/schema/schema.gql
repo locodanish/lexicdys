@@ -1,0 +1,38 @@
+type User @table {
+  displayName: String!
+  email: String
+  photoUrl: String
+  createdAt: Timestamp!
+}
+
+type FlashcardSet @table {
+  user: User!
+  name: String!
+  description: String
+  createdAt: Timestamp!
+}
+
+type Flashcard @table {
+  flashcardSet: FlashcardSet!
+  word: String!
+  definition: String!
+  createdAt: Timestamp!
+}
+
+type Paragraph @table {
+  user: User!
+  title: String!
+  content: String!
+  createdAt: Timestamp!
+  lastReadAt: Timestamp
+}
+
+type ReadingSetting @table {
+  user: User!
+  paragraph: Paragraph
+  fontFamily: String!
+  fontSize: Int!
+  lineSpacing: Float!
+  letterSpacing: Float!
+  isDefault: Boolean
+}
