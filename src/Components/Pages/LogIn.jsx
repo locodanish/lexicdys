@@ -1,10 +1,11 @@
 import React, { useState } from "react";
-import { signInWithEmailAndPassword } from "firebase/auth";
-import { auth } from "../../firebase";
+import axios from "axios"; // Import axios for backend calls
 import "../theme.css";
 
-function LogIn({ setPage, setIsLoggedIn }) {
-  const [username, setUsername] = useState("");
+// Added new props: setCurrentUser, setIsAdmin
+function LogIn({ setPage, setIsLoggedIn, setCurrentUser, setIsAdmin }) {
+  // Renamed 'username' to 'email' to match backend expectations
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loginMessage, setLoginMessage] = useState("");
   const [loading, setLoading] = useState(false);
@@ -15,15 +16,40 @@ function LogIn({ setPage, setIsLoggedIn }) {
     setLoading(true);
 
     try {
-      await signInWithEmailAndPassword(auth, username, password);
+      // 1. Send credentials to your MongoDB Backend
+      const res = await axios.post("http://localhost:5000/api/login", {
+        email: email,
+        password: password,
+      });
+
+      // 2. Success Handling
       setLoginMessage("✅ Login successful!");
-      setUsername("");
-      setPassword("");
+      
+      const userData = res.data.user;
+
+      // 3. Save to Local Storage (replaces Firebase persistence)
+      localStorage.setItem("user", JSON.stringify(userData));
+
+      // 4. Update App State
+      setIsLoggedIn(true);
+      setCurrentUser(userData);
+      
+      // Check admin status safely
+      if (userData.isAdmin) {
+        setIsAdmin(true);
+      } else {
+        setIsAdmin(false);
+      }
+
+      // 5. Redirect after a short delay
       setTimeout(() => {
-        setPage("home");
+        setPage(userData.isAdmin ? "admin" : "home");
       }, 1000);
+
     } catch (error) {
-      setLoginMessage("❌ Invalid email or password");
+      // 6. Error Handling
+      const message = error.response?.data?.message || "Invalid email or password";
+      setLoginMessage(`❌ ${message}`);
     } finally {
       setLoading(false);
     }
@@ -37,8 +63,8 @@ function LogIn({ setPage, setIsLoggedIn }) {
           type="email"
           className="form-input-modern"
           placeholder="your@email.com"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
           required
         />
       </div>
@@ -53,6 +79,7 @@ function LogIn({ setPage, setIsLoggedIn }) {
           required
         />
       </div>
+      
       <button
         type="submit"
         className="btn-primary-modern"
@@ -61,6 +88,25 @@ function LogIn({ setPage, setIsLoggedIn }) {
       >
         {loading ? "Signing in..." : "Sign In"}
       </button>
+
+      {/* Sign Up Link */}
+      <div style={{ marginTop: "1rem", textAlign: "center" }}>
+        <button
+          type="button"
+          onClick={() => setPage("signup")}
+          style={{
+            background: "none",
+            border: "none",
+            color: "var(--color-primary, #6B7FF9)",
+            cursor: "pointer",
+            textDecoration: "underline",
+            fontSize: "0.9rem"
+          }}
+        >
+          Don't have an account? Sign Up
+        </button>
+      </div>
+
       {loginMessage && (
         <div
           style={{

@@ -1,7 +1,8 @@
 import "./theme.css";
 import LogIn from "./Pages/LogIn";
 
-function Card({ setPage, setIsLoggedIn }) {
+// Update props to accept all the state setters from App.js
+function Card({ setPage, setIsLoggedIn, setCurrentUser, setIsAdmin }) {
   return (
     <div
       style={{
@@ -38,7 +39,13 @@ function Card({ setPage, setIsLoggedIn }) {
             Learn to read with confidence
           </p>
         </div>
-        <LogIn setPage={setPage} setIsLoggedIn={setIsLoggedIn} />
+        {/* Pass all props down to the LogIn form */}
+        <LogIn 
+          setPage={setPage} 
+          setIsLoggedIn={setIsLoggedIn} 
+          setCurrentUser={setCurrentUser}
+          setIsAdmin={setIsAdmin}
+        />
       </div>
     </div>
   );

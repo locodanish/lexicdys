@@ -1,125 +1,107 @@
-import React, { useState, useEffect } from "react";
-import {
-  collection,
-  addDoc,
-  getDocs,
-  deleteDoc,
-  doc,
-} from "firebase/firestore";
-import { db } from "../../firebase";
+import React, { useState, useEffect, useCallback } from "react";
+import axios from "axios";
 import "../theme.css";
 
 function AdminMaterials() {
-  const [word, setWord] = useState("");
-  const [sentence, setSentence] = useState("");
+  const [words, setWords] = useState([]);
+  const [sentences, setSentences] = useState([]);
   const [message, setMessage] = useState("");
 
-  // Words state
-  const [words, setWords] = useState([]);
-  const [loadingWords, setLoadingWords] = useState(false);
+  // --- FORM STATES ---
+  const [wordInput, setWordInput] = useState("");
+  const [sentenceInput, setSentenceInput] = useState("");
 
-  // Sentences state
-  const [sentences, setSentences] = useState([]);
-  const [loadingSentences, setLoadingSentences] = useState(false);
+  // --- EDITING STATES ---
+  const [editingWordId, setEditingWordId] = useState(null);
+  const [editingSentenceId, setEditingSentenceId] = useState(null);
 
-  // Fetch all words on mount
+  // Wrap fetchContent in useCallback to prevent re-creation on every render
+  const fetchContent = useCallback(async () => {
+    try {
+      const wRes = await axios.get("http://localhost:5000/api/admin/content/words");
+      const sRes = await axios.get("http://localhost:5000/api/admin/content/sentences");
+      setWords(wRes.data);
+      setSentences(sRes.data);
+    } catch (err) {
+      console.error(err);
+      setMessage("❌ Failed to load content.");
+    }
+  }, []); // Empty array means this function is only created once
+
   useEffect(() => {
-    fetchWords();
-    fetchSentences();
-  }, []);
+    fetchContent();
+  }, [fetchContent]); // Now fetchContent is a stable dependency
 
-  const fetchWords = async () => {
-    setLoadingWords(true);
-    try {
-      const snapshot = await getDocs(collection(db, "flashcard_words"));
-      const wordsList = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        text: doc.data().text,
-      }));
-      setWords(wordsList);
-    } catch (err) {
-      console.error(err);
-      setMessage("❌ Failed to load words.");
-    } finally {
-      setLoadingWords(false);
-    }
-  };
-
-  const fetchSentences = async () => {
-    setLoadingSentences(true);
-    try {
-      const snapshot = await getDocs(collection(db, "reading_sentences"));
-      const sentencesList = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        text: doc.data().text,
-      }));
-      setSentences(sentencesList);
-    } catch (err) {
-      console.error(err);
-      setMessage("❌ Failed to load sentences.");
-    } finally {
-      setLoadingSentences(false);
-    }
-  };
-
-  const addWord = async (e) => {
+  const handleWordSubmit = async (e) => {
     e.preventDefault();
-    setMessage("");
-    if (!word.trim()) return setMessage("Please enter a word.");
+    if (!wordInput.trim()) return;
+
     try {
-      await addDoc(collection(db, "flashcard_words"), { text: word.trim() });
-      setMessage("✅ Word added successfully.");
-      setWord("");
-      setTimeout(() => setMessage(""), 3000);
-      fetchWords();
+      if (editingWordId) {
+        await axios.put(`http://localhost:5000/api/admin/content/words/${editingWordId}`, { text: wordInput.trim() });
+        setMessage("✅ Word updated.");
+      } else {
+        await axios.post("http://localhost:5000/api/admin/content", { text: wordInput.trim(), type: "words" });
+        setMessage("✅ Word added.");
+      }
+      setWordInput("");
+      setEditingWordId(null);
+      fetchContent();
     } catch (err) {
-      console.error(err);
-      setMessage("❌ Failed to add word.");
+      setMessage("❌ Operation failed.");
     }
   };
 
-  const addSentence = async (e) => {
+  const handleSentenceSubmit = async (e) => {
     e.preventDefault();
-    setMessage("");
-    if (!sentence.trim()) return setMessage("Please enter a sentence.");
+    if (!sentenceInput.trim()) return;
+
     try {
-      await addDoc(collection(db, "reading_sentences"), {
-        text: sentence.trim(),
-      });
-      setMessage("✅ Sentence added successfully.");
-      setSentence("");
-      setTimeout(() => setMessage(""), 3000);
-      fetchSentences();
+      if (editingSentenceId) {
+        await axios.put(`http://localhost:5000/api/admin/content/sentences/${editingSentenceId}`, { text: sentenceInput.trim() });
+        setMessage("✅ Sentence updated.");
+      } else {
+        await axios.post("http://localhost:5000/api/admin/content", { text: sentenceInput.trim(), type: "sentences" });
+        setMessage("✅ Sentence added.");
+      }
+      setSentenceInput("");
+      setEditingSentenceId(null);
+      fetchContent();
     } catch (err) {
-      console.error(err);
-      setMessage("❌ Failed to add sentence.");
+      setMessage("❌ Operation failed.");
     }
   };
 
-  const deleteWord = async (id) => {
-    if (!window.confirm("Are you sure you want to delete this word?")) return;
+  const deleteItem = async (id, type) => {
+    const itemType = type === "words" ? "word" : "sentence";
+    if (!window.confirm(`Delete this ${itemType}?`)) return;
+
     try {
-      await deleteDoc(doc(db, "flashcard_words", id));
-      setMessage("✅ Word deleted.");
-      setTimeout(() => setMessage(""), 2000);
-      fetchWords();
+      await axios.delete(`http://localhost:5000/api/admin/content/${type}/${id}`);
+      setMessage(`✅ ${itemType} deleted.`);
+      fetchContent();
     } catch (err) {
-      console.error(err);
-      setMessage("❌ Failed to delete word.");
+      setMessage("❌ Delete failed.");
     }
   };
 
-  const deleteSentence = async (id) => {
-    if (!window.confirm("Are you sure you want to delete this sentence?"))
-      return;
-    try {
-      await deleteDoc(doc(db, "reading_sentences", id));
-      setMessage("✅ Sentence deleted.");
-      setTimeout(() => setMessage(""), 2000);
-      fetchSentences();
-    } catch (err) {
-      console.error(err);
-      setMessage("❌ Failed to delete sentence.");
+  const startEditing = (item, type) => {
+    if (type === 'words') {
+      setEditingWordId(item._id);
+      setWordInput(item.text);
+    } else {
+      setEditingSentenceId(item._id);
+      setSentenceInput(item.text);
+    }
+  };
+
+  const cancelEdit = (type) => {
+    if (type === 'words') {
+      setEditingWordId(null);
+      setWordInput("");
+    } else {
+      setEditingSentenceId(null);
+      setSentenceInput("");
     }
   };
 
@@ -131,271 +113,84 @@ function AdminMaterials() {
       </div>
 
       {message && (
-        <div
-          className={
-            message.includes("✅")
-              ? "alert-success-modern"
-              : "alert-error-modern"
-          }
-          style={{ marginBottom: "1.5rem" }}
-        >
+        <div className={message.includes("✅") ? "alert-success-modern" : "alert-error-modern"} style={{ marginBottom: "1.5rem" }}>
           {message}
         </div>
       )}
 
-      {/* Add Forms Section */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(350px, 1fr))",
-          gap: "2rem",
-          marginBottom: "3rem",
-        }}
-      >
-        {/* Add Word Form */}
-        <div className="card-modern">
-          <h2 className="card-header-modern">Add Flashcard Word</h2>
-          <form onSubmit={addWord}>
+      {/* Row 1: Forms */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(400px, 1fr))", gap: "2rem", marginBottom: "2rem", alignItems: "stretch" }}>
+        {/* Add Word */}
+        <div className="card-modern" style={{ display: "flex", flexDirection: "column", borderColor: editingWordId ? "var(--color-primary)" : "var(--color-border)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h2 className="card-header-modern">{editingWordId ? "Edit Word" : "Add Word"}</h2>
+            {editingWordId && <button onClick={() => cancelEdit('words')} style={{background:"none", border:"none", cursor:"pointer", textDecoration:"underline"}}>Cancel</button>}
+          </div>
+          <form onSubmit={handleWordSubmit} style={{ display: "flex", flexDirection: "column", flex: 1 }}>
             <div className="form-group-modern">
-              <label className="form-label-modern">Word</label>
-              <input
-                type="text"
-                className="form-input-modern"
-                value={word}
-                onChange={(e) => setWord(e.target.value)}
-                placeholder="Enter a single word"
-              />
+              <input type="text" className="form-input-modern" value={wordInput} onChange={(e) => setWordInput(e.target.value)} placeholder="Enter a single word" />
             </div>
-            <button
-              type="submit"
-              className="btn-primary-modern"
-              style={{ width: "100%" }}
-            >
-              + Add Word
+            <button type="submit" className="btn-primary-modern" style={{ width: "100%", marginTop: "auto" }}>
+              {editingWordId ? "Update Word" : "+ Add Word"}
             </button>
           </form>
         </div>
 
-        {/* Add Sentence Form */}
-        <div className="card-modern">
-          <h2 className="card-header-modern">Add Reading Sentence</h2>
-          <form onSubmit={addSentence}>
+        {/* Add Sentence */}
+        <div className="card-modern" style={{ display: "flex", flexDirection: "column", borderColor: editingSentenceId ? "var(--color-primary)" : "var(--color-border)" }}>
+           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h2 className="card-header-modern">{editingSentenceId ? "Edit Sentence" : "Add Sentence"}</h2>
+            {editingSentenceId && <button onClick={() => cancelEdit('sentences')} style={{background:"none", border:"none", cursor:"pointer", textDecoration:"underline"}}>Cancel</button>}
+          </div>
+          <form onSubmit={handleSentenceSubmit} style={{ display: "flex", flexDirection: "column", flex: 1 }}>
             <div className="form-group-modern">
-              <label className="form-label-modern">Sentence</label>
-              <textarea
-                className="form-input-modern"
-                value={sentence}
-                onChange={(e) => setSentence(e.target.value)}
-                placeholder="Enter a sentence or paragraph"
-                rows={5}
-                style={{ resize: "vertical" }}
-              />
+              <textarea className="form-input-modern" value={sentenceInput} onChange={(e) => setSentenceInput(e.target.value)} placeholder="Enter a sentence" rows={3} style={{ resize: "vertical" }} />
             </div>
-            <button
-              type="submit"
-              className="btn-primary-modern"
-              style={{ width: "100%" }}
-            >
-              + Add Sentence
+            <button type="submit" className="btn-primary-modern" style={{ width: "100%", marginTop: "auto" }}>
+              {editingSentenceId ? "Update Sentence" : "+ Add Sentence"}
             </button>
           </form>
         </div>
       </div>
 
-      {/* Materials Lists Section */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(350px, 1fr))",
-          gap: "2rem",
-        }}
-      >
-        {/* Flashcard Words List */}
+      {/* Row 2: Lists */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(400px, 1fr))", gap: "2rem" }}>
+        {/* Word List */}
         <div className="card-modern">
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              marginBottom: "1rem",
-            }}
-          >
-            <h2 className="card-header-modern" style={{ marginBottom: 0 }}>
-              Flashcard Words ({words.length})
-            </h2>
-            <button
-              onClick={fetchWords}
-              className="btn-secondary-modern"
-              style={{ padding: "0.5rem 1rem", fontSize: "0.85rem" }}
-            >
-              🔄 Refresh
-            </button>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+            <h3 style={{ fontSize: "1.1rem", margin: 0 }}>Flashcard List ({words.length})</h3>
+            <button onClick={fetchContent} className="btn-secondary-modern" style={{ padding: "0.4rem 0.8rem", fontSize: "0.8rem" }}>Refresh</button>
           </div>
-
-          {loadingWords ? (
-            <div
-              style={{
-                textAlign: "center",
-                padding: "2rem",
-                color: "var(--color-text-secondary)",
-              }}
-            >
-              <div
-                className="spinner-modern"
-                style={{ display: "inline-block", marginBottom: "1rem" }}
-              />
-              <p>Loading words...</p>
-            </div>
-          ) : words.length === 0 ? (
-            <div
-              style={{
-                padding: "2rem",
-                textAlign: "center",
-                color: "var(--color-text-secondary)",
-              }}
-            >
-              No words added yet.
-            </div>
-          ) : (
-            <div style={{ maxHeight: "500px", overflowY: "auto" }}>
-              {words.map((w, idx) => (
-                <div
-                  key={w.id}
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    padding: "0.75rem",
-                    borderBottom:
-                      idx < words.length - 1
-                        ? "1px solid var(--color-border)"
-                        : "none",
-                    gap: "1rem",
-                  }}
-                >
-                  <div style={{ flex: 1, wordBreak: "break-word" }}>
-                    <span
-                      style={{
-                        fontWeight: "500",
-                        color: "var(--color-text-primary)",
-                      }}
-                    >
-                      {w.text}
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => deleteWord(w.id)}
-                    className="btn-danger-modern"
-                    style={{
-                      padding: "0.4rem 0.8rem",
-                      fontSize: "0.85rem",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    Delete
-                  </button>
+          <div style={{ maxHeight: "400px", overflowY: "auto" }}>
+            {words.map((w) => (
+              <div key={w._id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.75rem", borderBottom: "1px solid #eee" }}>
+                <span style={{ fontWeight: "500" }}>{w.text}</span>
+                <div style={{ display: "flex", gap: "5px" }}>
+                  <button onClick={() => startEditing(w, 'words')} className="btn-secondary-modern" style={{ padding: "0.3rem 0.6rem", fontSize: "0.8rem" }}>Edit</button>
+                  <button onClick={() => deleteItem(w._id, 'words')} className="btn-danger-modern" style={{ padding: "0.3rem 0.6rem", fontSize: "0.8rem" }}>Delete</button>
                 </div>
-              ))}
-            </div>
-          )}
+              </div>
+            ))}
+          </div>
         </div>
 
-        {/* Reading Sentences List */}
+        {/* Sentence List */}
         <div className="card-modern">
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              marginBottom: "1rem",
-            }}
-          >
-            <h2 className="card-header-modern" style={{ marginBottom: 0 }}>
-              Reading Sentences ({sentences.length})
-            </h2>
-            <button
-              onClick={fetchSentences}
-              className="btn-secondary-modern"
-              style={{ padding: "0.5rem 1rem", fontSize: "0.85rem" }}
-            >
-              🔄 Refresh
-            </button>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+            <h3 style={{ fontSize: "1.1rem", margin: 0 }}>Reading List ({sentences.length})</h3>
+            <button onClick={fetchContent} className="btn-secondary-modern" style={{ padding: "0.4rem 0.8rem", fontSize: "0.8rem" }}>Refresh</button>
           </div>
-
-          {loadingSentences ? (
-            <div
-              style={{
-                textAlign: "center",
-                padding: "2rem",
-                color: "var(--color-text-secondary)",
-              }}
-            >
-              <div
-                className="spinner-modern"
-                style={{ display: "inline-block", marginBottom: "1rem" }}
-              />
-              <p>Loading sentences...</p>
-            </div>
-          ) : sentences.length === 0 ? (
-            <div
-              style={{
-                padding: "2rem",
-                textAlign: "center",
-                color: "var(--color-text-secondary)",
-              }}
-            >
-              No sentences added yet.
-            </div>
-          ) : (
-            <div style={{ maxHeight: "500px", overflowY: "auto" }}>
-              {sentences.map((s, idx) => (
-                <div
-                  key={s.id}
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "flex-start",
-                    padding: "0.75rem",
-                    borderBottom:
-                      idx < sentences.length - 1
-                        ? "1px solid var(--color-border)"
-                        : "none",
-                    gap: "1rem",
-                  }}
-                >
-                  <div
-                    style={{
-                      flex: 1,
-                      wordBreak: "break-word",
-                      lineHeight: "1.4",
-                    }}
-                  >
-                    <span
-                      style={{
-                        color: "var(--color-text-secondary)",
-                        fontSize: "0.9rem",
-                      }}
-                    >
-                      {s.text.length > 100
-                        ? `${s.text.substring(0, 100)}...`
-                        : s.text}
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => deleteSentence(s.id)}
-                    className="btn-danger-modern"
-                    style={{
-                      padding: "0.4rem 0.8rem",
-                      fontSize: "0.85rem",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    Delete
-                  </button>
+          <div style={{ maxHeight: "400px", overflowY: "auto" }}>
+            {sentences.map((s) => (
+              <div key={s._id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.75rem", borderBottom: "1px solid #eee" }}>
+                <span style={{ fontSize: "0.9rem", maxWidth: "70%" }}>{s.text}</span>
+                <div style={{ display: "flex", gap: "5px" }}>
+                  <button onClick={() => startEditing(s, 'sentences')} className="btn-secondary-modern" style={{ padding: "0.3rem 0.6rem", fontSize: "0.8rem" }}>Edit</button>
+                  <button onClick={() => deleteItem(s._id, 'sentences')} className="btn-danger-modern" style={{ padding: "0.3rem 0.6rem", fontSize: "0.8rem" }}>Delete</button>
                 </div>
-              ))}
-            </div>
-          )}
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </div>

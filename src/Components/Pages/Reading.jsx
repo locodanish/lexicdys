@@ -1,337 +1,217 @@
-import React, { useState, useRef, useEffect } from "react";
-import { collection, getDocs } from "firebase/firestore";
-import { db } from "../../firebase";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import axios from "axios";
 import "../theme.css";
 
-function Reading() {
+function Reading({ currentUser }) {
   const [listening, setListening] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [currentIdx, setCurrentIdx] = useState(0);
   const [feedback, setFeedback] = useState("");
+  const [accuracy, setAccuracy] = useState(0);
   const [isCompleted, setIsCompleted] = useState(false);
-  const [paragraphs, setParagraphs] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [sentences, setSentences] = useState([]);
+  
+  // ✅ FIX: Use Ref for immediate locking (State is too slow for speech events)
+  const processingRef = useRef(false);
+  
   const recognitionRef = useRef(null);
+  const timeoutRef = useRef(null);
 
-  useEffect(() => {
-    const fetchParagraphs = async () => {
-      try {
-        const querySnapshot = await getDocs(
-          collection(db, "reading_sentences")
-        );
-        const fetchedParagraphs = querySnapshot.docs.map(
-          (doc) => doc.data().text
-        );
-        if (fetchedParagraphs.length > 0) {
-          setParagraphs(fetchedParagraphs);
-          setError("");
-        } else {
-          setError("No sentences found in database.");
-          setParagraphs([]);
-        }
-      } catch (err) {
-        setError("Failed to load sentences from database.");
-        console.error(err);
-        setParagraphs([]);
-      } finally {
-        setLoading(false);
+  // 1. Similarity Algorithm (Levenshtein Distance)
+  const calculateSimilarity = (a, b) => {
+    if (!a || !b) return 0;
+    const clean = (text) => text.toLowerCase().replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, "").trim();
+    const cleanA = clean(a);
+    const cleanB = clean(b);
+    if (cleanA === cleanB) return 100;
+
+    const lenA = cleanA.length;
+    const lenB = cleanB.length;
+    const dp = Array.from({ length: lenA + 1 }, () => Array(lenB + 1).fill(0));
+
+    for (let i = 0; i <= lenA; i++) dp[i][0] = i;
+    for (let j = 0; j <= lenB; j++) dp[0][j] = j;
+
+    for (let i = 1; i <= lenA; i++) {
+      for (let j = 1; j <= lenB; j++) {
+        const cost = cleanA[i - 1] === cleanB[j - 1] ? 0 : 1;
+        dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
       }
-    };
-
-    fetchParagraphs();
-  }, []);
-
-  const handleListen = () => {
-    if (
-      !("webkitSpeechRecognition" in window || "SpeechRecognition" in window)
-    ) {
-      alert("Speech recognition is not supported in this browser.");
-      return;
     }
-    const SpeechRecognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition;
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
-    recognition.onresult = (event) => {
-      let interimTranscript = "";
-      let finalTranscript = "";
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalTranscript += transcript + " ";
-        } else {
-          interimTranscript += transcript;
-        }
-      }
-      setTranscript(finalTranscript + interimTranscript);
-    };
-    recognition.onend = () => {
-      setListening(false);
-    };
-    recognitionRef.current = recognition;
-    setTranscript("");
-    setFeedback("");
-    recognition.start();
-    setListening(true);
+    const distance = dp[lenA][lenB];
+    const maxLength = Math.max(lenA, lenB);
+    return Math.round(((maxLength - distance) / maxLength) * 100);
   };
 
-  const handleStopListening = () => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      recognitionRef.current.abort();
-      recognitionRef.current = null;
+  const fetchSentences = useCallback(async () => {
+    try {
+      const res = await axios.get("http://localhost:5000/api/admin/content/sentences");
+      if (res.data.length > 0) setSentences(res.data);
+      else setSentences([]);
+    } catch (err) { console.error(err); }
+  }, []);
+
+  useEffect(() => {
+    fetchSentences();
+    return () => { if (timeoutRef.current) clearTimeout(timeoutRef.current); };
+  }, [fetchSentences]);
+
+  const handleNext = useCallback(() => {
+    // ✅ Release the lock when moving to next
+    processingRef.current = false;
+    
+    if (currentIdx < sentences.length - 1) {
+      setCurrentIdx((idx) => idx + 1);
+      setTranscript("");
+      setFeedback("");
+      setAccuracy(0);
+      setListening(false);
+    } else {
+      setIsCompleted(true);
+      setListening(false);
     }
-    setListening(false);
-    checkAccuracy();
+  }, [currentIdx, sentences.length]);
+
+  const saveProgress = async (score) => {
+    if (!currentUser) return;
+    try {
+      await axios.post("http://localhost:5000/api/progress", {
+        userId: currentUser._id,
+        contentId: sentences[currentIdx]._id,
+        contentType: 'sentence',
+        accuracy: score
+      });
+    } catch(err) { console.error("Could not save progress"); }
+  };
+
+  const handleListen = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return alert("Use Chrome.");
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true; 
+    recognition.lang = "en-US";
+
+    recognition.onstart = () => {
+      setListening(true);
+      setFeedback("");
+      setTranscript("");
+      setAccuracy(0);
+    };
+
+    recognition.onresult = (event) => {
+      // ✅ FIX: Check immediate Ref lock instead of State
+      if (processingRef.current) return;
+
+      let spoken = "";
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        spoken += event.results[i][0].transcript;
+      }
+      setTranscript(spoken);
+
+      const target = sentences[currentIdx]?.text || "";
+      const currentScore = calculateSimilarity(spoken, target);
+      setAccuracy(currentScore);
+
+      if (currentScore === 100) {
+        // ✅ FIX: Set immediate Ref lock
+        processingRef.current = true;
+        
+        setFeedback("✅ Perfect!");
+        recognition.stop();
+        saveProgress(100);
+        
+        // Clear any existing timeout to be safe
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        timeoutRef.current = setTimeout(handleNext, 1500);
+      }
+    };
+
+    recognition.onend = () => setListening(false);
+    recognitionRef.current = recognition;
+    recognition.start();
   };
 
   const handleToggleListening = () => {
     if (listening) {
-      handleStopListening();
+      if (recognitionRef.current) recognitionRef.current.stop();
+      setListening(false);
     } else {
       handleListen();
     }
   };
 
-  const checkAccuracy = () => {
-    if (paragraphs.length === 0) return;
-    const paragraph = paragraphs[currentIdx];
-    const spokenWords = transcript.toLowerCase().trim().split(/\s+/);
-    const paragraphWords = paragraph.toLowerCase().split(/\s+/);
-
-    let matchCount = 0;
-    for (let word of spokenWords) {
-      if (paragraphWords.some((w) => w.includes(word) || word.includes(w))) {
-        matchCount++;
-      }
-    }
-
-    const accuracy =
-      spokenWords.length > 0
-        ? Math.round((matchCount / paragraphWords.length) * 100)
-        : 0;
-    setFeedback(`Accuracy: ${accuracy}%`);
-  };
-
-  const handleNext = () => {
-    if (currentIdx < paragraphs.length - 1) {
-      setCurrentIdx((idx) => idx + 1);
-      setTranscript("");
-      setFeedback("");
-      setListening(false);
-    } else {
-      setIsCompleted(true);
-    }
-    if (recognitionRef.current) {
-      recognitionRef.current.abort();
-      recognitionRef.current = null;
-    }
-  };
-
-  const handleRestart = () => {
-    setCurrentIdx(0);
-    setTranscript("");
-    setFeedback("");
-    setIsCompleted(false);
-    setListening(false);
-    if (recognitionRef.current) {
-      recognitionRef.current.abort();
-      recognitionRef.current = null;
-    }
-  };
-
-  if (loading) {
-    return (
-      <div className="page-content" style={{ textAlign: "center" }}>
-        <div
-          className="spinner-modern"
-          style={{ display: "inline-block", margin: "2rem 0" }}
-        />
-        <p>Loading reading material...</p>
-      </div>
-    );
-  }
-
-  if (error && paragraphs.length === 0) {
-    return (
-      <div className="page-content">
-        <div className="alert-error-modern">{error}</div>
-      </div>
-    );
-  }
-
   return (
     <div className="page-content">
       <div className="page-header">
         <h1>Reading Practice</h1>
-        <p>Read the paragraph aloud and we'll measure your accuracy</p>
+        <p>Read the sentence aloud clearly</p>
       </div>
 
       {isCompleted ? (
-        <div
-          className="card-modern"
-          style={{ textAlign: "center", padding: "3rem 1.5rem" }}
-        >
-          <div style={{ fontSize: "3rem", marginBottom: "1rem" }}>🎉</div>
-          <h2 style={{ color: "var(--color-success)", marginBottom: "0.5rem" }}>
-            All Paragraphs Complete!
-          </h2>
-          <p
-            style={{
-              color: "var(--color-text-secondary)",
-              marginBottom: "2rem",
-            }}
-          >
-            Excellent reading practice! Keep improving your skills.
-          </p>
-          <button onClick={handleRestart} className="btn-primary-modern">
-            Restart Practice
-          </button>
-        </div>
-      ) : paragraphs.length === 0 ? (
-        <div
-          className="card-modern"
-          style={{ textAlign: "center", padding: "2rem" }}
-        >
-          <p style={{ color: "var(--color-text-secondary)" }}>
-            No reading material available.
-          </p>
+        <div className="card-modern" style={{ textAlign: "center", padding: "3rem" }}>
+          <div style={{ fontSize: "3rem" }}>🎉</div>
+          <h2>Reading Session Complete!</h2>
+          <button onClick={() => window.location.reload()} className="btn-primary-modern" style={{ marginTop: "1rem" }}>Start Over</button>
         </div>
       ) : (
-        <div style={{ maxWidth: "800px", margin: "0 auto" }}>
-          {/* Paragraph Display */}
-          <div
-            className="card-modern"
-            style={{
-              background:
-                "linear-gradient(135deg, var(--color-bg-secondary) 0%, white 100%)",
-              marginBottom: "2rem",
-              padding: "2rem",
-              lineHeight: "1.8",
-              fontSize: "1.05rem",
-              color: "var(--color-text-primary)",
-              minHeight: "150px",
-              display: "flex",
-              alignItems: "center",
-            }}
-          >
-            {paragraphs[currentIdx]}
+        <div style={{ maxWidth: "700px", margin: "0 auto" }}>
+          
+          <div className="card-modern" style={{
+            textAlign: "center", padding: "3rem 2rem", marginBottom: "2rem",
+            borderLeft: "5px solid var(--color-primary)",
+            position: "relative", overflow: "hidden"
+          }}>
+            <div style={{ fontSize: "0.9rem", color: "gray", marginBottom: "1rem" }}>
+              {/* ✅ Added Math.min to prevent "4 of 2" display bug */}
+              Sentence {Math.min(currentIdx + 1, sentences.length)} of {sentences.length}
+            </div>
+            <div style={{ fontSize: "1.8rem", fontWeight: "600", color: "#333", lineHeight: "1.4" }}>
+              {sentences[currentIdx]?.text || "Loading..."}
+            </div>
+            {listening && <div className="listening-bar-pulse" />}
           </div>
 
-          {/* Progress */}
-          <div
-            style={{
-              marginBottom: "2rem",
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-            }}
-          >
-            <div
-              style={{
-                fontSize: "0.9rem",
-                color: "var(--color-text-secondary)",
-              }}
+          <div style={{ display: "flex", justifyContent: "center", gap: "1rem", marginBottom: "2rem" }}>
+            <button 
+                onClick={handleToggleListening} 
+                className={listening ? "btn-danger-modern" : "btn-primary-modern"} 
+                style={{ minWidth: "150px" }}
+                disabled={processingRef.current} // Disable button while transitioning
             >
-              Paragraph {currentIdx + 1} of {paragraphs.length}
-            </div>
-            <div
-              style={{
-                flex: 1,
-                marginLeft: "1rem",
-                backgroundColor: "var(--color-border-light)",
-                height: "6px",
-                borderRadius: "var(--radius-md)",
-                overflow: "hidden",
-              }}
-            >
-              <div
-                style={{
-                  backgroundColor: "var(--color-primary)",
-                  height: "100%",
-                  width: `${((currentIdx + 1) / paragraphs.length) * 100}%`,
-                  transition: "width 0.3s ease",
-                }}
-              />
-            </div>
-          </div>
-
-          {/* Controls */}
-          <div
-            style={{
-              display: "flex",
-              gap: "1rem",
-              marginBottom: "2rem",
-              flexWrap: "wrap",
-            }}
-          >
-            <button
-              onClick={handleToggleListening}
-              className={listening ? "btn-danger-modern" : "btn-primary-modern"}
-              style={{ flex: 1, minWidth: "140px" }}
-            >
-              {listening ? "🛑 Stop" : "🎤 Read"}
+              {listening ? "🛑 Stop" : "🎤 Start Reading"}
             </button>
-            <button
-              onClick={handleNext}
-              className="btn-secondary-modern"
-              style={{ flex: 1, minWidth: "140px" }}
-              disabled={listening || currentIdx >= paragraphs.length - 1}
-            >
-              Skip Paragraph
+            <button onClick={handleNext} className="btn-secondary-modern" disabled={processingRef.current}>
+              Skip
             </button>
           </div>
 
-          {/* Your Speech */}
-          <div className="card-modern" style={{ marginBottom: "1rem" }}>
-            <div
-              style={{
-                color: "var(--color-text-secondary)",
-                fontSize: "0.9rem",
-                marginBottom: "0.5rem",
-              }}
-            >
-              Your reading:
+          <div className="card-modern">
+            <p>Live Transcript: <strong>{transcript || "..."}</strong></p>
+            
+            {/* Accuracy Bar */}
+            <div style={{ marginTop: "15px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "5px", fontSize: "0.9rem" }}>
+                <span>Accuracy</span>
+                <span>{accuracy}%</span>
+              </div>
+              <div style={{ height: "10px", background: "#eee", borderRadius: "5px", overflow: "hidden" }}>
+                <div style={{ 
+                  width: `${accuracy}%`, 
+                  height: "100%", 
+                  background: accuracy === 100 ? "#4CAF50" : accuracy > 80 ? "#2196F3" : "#FF9800", 
+                  transition: "width 0.3s ease" 
+                }} />
+              </div>
             </div>
-            <div
-              style={{
-                padding: "1rem",
-                backgroundColor: "var(--color-bg-secondary)",
-                borderRadius: "var(--radius-md)",
-                color: "var(--color-text-primary)",
-                fontSize: "0.95rem",
-                lineHeight: "1.6",
-                minHeight: "60px",
-                maxHeight: "120px",
-                overflowY: "auto",
-              }}
-            >
-              {transcript || "—"}
-            </div>
+
+            {feedback && <div style={{ marginTop: "10px", fontWeight: "bold", color: "green" }}>{feedback}</div>}
           </div>
 
-          {/* Accuracy Feedback */}
-          {feedback && (
-            <div
-              style={{
-                textAlign: "center",
-                padding: "1rem",
-                borderRadius: "var(--radius-md)",
-                background: "var(--color-accent-light)",
-                border: "1px solid var(--color-accent)",
-                color: "var(--color-text-primary)",
-                fontSize: "1rem",
-                fontWeight: "600",
-              }}
-            >
-              {feedback}
-            </div>
-          )}
         </div>
       )}
+      <style>{`@keyframes pulseBar { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }`}</style>
     </div>
   );
 }
